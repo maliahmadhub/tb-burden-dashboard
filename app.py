@@ -182,8 +182,10 @@ if not sel_regions:
     st.stop()
 
 
-def world_year(year):
+def world_year(year, region_filter=None):
     d = est[est["year"] == year]
+    if region_filter:
+        d = d[d["region_name"].isin(region_filter)]
     inc, mort = d["e_inc_num"].sum(), d["e_mort_num"].sum()
     hiv, pop = d["e_inc_tbhiv_num"].sum(), d["e_pop_num"].sum()
     rate = inc / pop * 1e5 if pop else np.nan
@@ -203,16 +205,17 @@ def cascade(year, region_filter=None):
 
 # ================================================================ PAGES
 def page_home():
-    inc, mort, hiv, rate = world_year(sel_year)
-    pinc, pmort, *_ = world_year(max(sel_year - 1, yr_min))
+    inc, mort, hiv, rate = world_year(sel_year, sel_regions)
+    pinc, pmort, *_ = world_year(max(sel_year - 1, yr_min), sel_regions)
     di = (inc - pinc) / pinc * 100 if pinc else 0
     dm = (mort - pmort) / pmort * 100 if pmort else 0
-    gi, notified, gap = cascade(sel_year)
+    gi, notified, gap = cascade(sel_year, sel_regions)
     det = notified / gi * 100 if gi else 0
+    scope = "Global" if set(sel_regions) == set(regions) else ", ".join(sel_regions)
 
     st.markdown(f"<div class='hero'><h1>Global Tuberculosis Burden: Executive Briefing</h1>"
-                f"<p>The world's leading infectious-disease killer &nbsp;·&nbsp; reporting year "
-                f"{sel_year} &nbsp;·&nbsp; source: WHO Global Tuberculosis Programme</p>"
+                f"<p>Scope: {scope} &nbsp;·&nbsp; reporting year {sel_year} &nbsp;·&nbsp; the world's "
+                f"leading infectious-disease killer [WHO, 2024]</p>"
                 f"<p style='font-size:12.5px;color:#AEC9D2;margin:8px 0 0 0'>Mohamad Ali Ahmad &nbsp;·&nbsp; MSBA 382 Healthcare Analytics &nbsp;·&nbsp; Presentation: 1 July 2026</p></div>",
                 unsafe_allow_html=True)
     st.markdown("")
@@ -220,7 +223,7 @@ def page_home():
     k1.metric("New cases (incidence)", fmt(inc), f"{di:+.1f}% vs prior year")
     k2.metric("TB deaths", fmt(mort), f"{dm:+.1f}% vs prior year", delta_color="inverse")
     k3.metric("Case-detection rate", f"{det:.0f}%")
-    k4.metric("HIV-positive TB cases", fmt(hiv))
+    k4.metric("Undiagnosed (detection gap)", fmt(gap))
 
     cL, cR = st.columns([1.4, 1])
     with cL:
@@ -236,10 +239,14 @@ def page_home():
                     " went undiagnosed, untreated, and still transmitting.</div></div>",
                     unsafe_allow_html=True)
 
-    st.markdown("<div class='insight'><b>Key insight &amp; action.</b> Only ~" + f"{det:.0f}" +
-                "% of cases are detected. Closing this gap with active case-finding and rapid "
-                "molecular testing in the highest-burden geographies is the single biggest lever "
-                "on deaths and transmission.</div>", unsafe_allow_html=True)
+    sw, ra = st.columns(2)
+    sw.markdown("<div class='insight'><b>So what?</b> Only about " + f"{det:.0f}" +
+                "% of cases are detected. A large undiagnosed population stays untreated and keeps "
+                "transmitting, driving future deaths and demand on the health system.</div>",
+                unsafe_allow_html=True)
+    ra.markdown("<div class='insight' style='border-left-color:#0E7C86'><b>Recommended action.</b> "
+                "Prioritise active case-finding and rapid molecular testing in the highest-burden "
+                "geographies before spreading resources evenly.</div>", unsafe_allow_html=True)
 
     with st.expander("📋  The full business case (what, how big, who, where, key insight, action, value)"):
         qa = [
@@ -293,6 +300,9 @@ def page_home():
 
     st.caption("Each detailed page in the sidebar carries a decision box: observation → "
                "interpretation → implication → recommendation → metric to monitor.")
+    st.caption("Sources: WHO Global Tuberculosis Report 2024 (burden, leading-cause, case detection, "
+               "~55–60% male share); the ~10–15 contacts infected per year by an untreated case is a "
+               "standard WHO epidemiological estimate.")
 
 def page_burden():
     st.title("Burden & Trends")
@@ -458,16 +468,15 @@ def page_drivers():
                         "previously treated cases are multidrug/rifampicin-resistant; only a "
                         "minority are detected and treated.</div>", unsafe_allow_html=True)
 
-    st.subheader("The TB care cascade")
+    st.subheader("The care gap: undiagnosed cases are the main operational risk")
     gi, notified, gap = cascade(sel_year, sel_regions)
-    treated = notified * 0.85
-    fig = go.Figure(go.Funnel(y=["Estimated new cases", "Detected & notified", "Successfully treated*"],
-                    x=[gi, notified, treated], textinfo="value+percent initial",
-                    marker=dict(color=[NAVY, TEAL, GOOD])))
-    fig.update_layout(height=340, margin=dict(t=10, b=10))
+    fig = go.Figure(go.Funnel(y=["Estimated new cases", "Detected & notified"],
+                    x=[gi, notified], textinfo="value+percent initial",
+                    marker=dict(color=[NAVY, TEAL])))
+    fig.update_layout(height=320, margin=dict(t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("*Treatment success shown as an illustrative 85% of notified cases; the WHO "
-               "'outcomes' file holds country-reported rates.")
+    st.caption(f"Estimated detection gap for this selection: about {fmt(gap)} people who developed "
+               "TB but were never diagnosed or reported (incidence minus notifications).")
 
     st.subheader("Does weaker detection track higher mortality?")
     sc = est[(est["year"] == sel_year) & (est["region_name"].isin(sel_regions))]
@@ -550,7 +559,7 @@ def page_forecast():
         fig.add_trace(go.Scatter(x=np.concatenate([fut, fut[::-1]]),
                       y=np.concatenate([fit(fut) * np.exp(band), (fit(fut) * np.exp(-band))[::-1]]),
                       fill="toself", fillcolor="rgba(228,87,46,0.13)",
-                      line=dict(color="rgba(0,0,0,0)"), name="95% band"))
+                      line=dict(color="rgba(0,0,0,0)"), name="Indicative band (historical variation)"))
     fig.add_trace(go.Scatter(x=tx, y=ty, mode="markers+lines+text", name="WHO End TB target path",
                   line=dict(color=GOOD, width=2, dash="dot"),
                   marker=dict(size=9, symbol="diamond"),
