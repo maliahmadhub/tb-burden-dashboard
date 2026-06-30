@@ -229,7 +229,8 @@ def page_home():
     with cL:
         st.markdown("**The core problem: the detection gap**")
         fig = go.Figure(go.Funnel(y=["Developed TB", "Diagnosed & reported"], x=[gi, notified],
-                        textinfo="value+percent initial", marker=dict(color=[NAVY, GOOD])))
+                        text=[fmt(gi), fmt(notified)], textinfo="text+percent initial",
+                        marker=dict(color=[NAVY, GOOD])))
         fig.update_layout(height=230, margin=dict(t=6, b=6, l=10, r=10))
         st.plotly_chart(fig, use_container_width=True)
     with cR:
@@ -471,7 +472,7 @@ def page_drivers():
     st.subheader("The care gap: undiagnosed cases are the main operational risk")
     gi, notified, gap = cascade(sel_year, sel_regions)
     fig = go.Figure(go.Funnel(y=["Estimated new cases", "Detected & notified"],
-                    x=[gi, notified], textinfo="value+percent initial",
+                    x=[gi, notified], text=[fmt(gi), fmt(notified)], textinfo="text+percent initial",
                     marker=dict(color=[NAVY, TEAL])))
     fig.update_layout(height=320, margin=dict(t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
