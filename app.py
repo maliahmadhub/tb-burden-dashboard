@@ -1,154 +1,140 @@
 """
-The Global Tuberculosis Burden Dashboard
-=========================================
-A consulting-grade analytics dashboard built for a healthcare decision-maker
-(e.g., a national TB programme, MoPH, or global health funder).
+Global Tuberculosis Burden — Executive Decision Dashboard
+=========================================================
+A consulting-grade decision-support tool for a healthcare decision-maker.
+Built as a HEALTHCARE BUSINESS CASE: every page answers what decision it supports,
+what the data shows, why it matters, and what action to take.
 
-Author : Mohamad Ali Ahmad
-Course  : MSBA 382 - Healthcare Analytics
-Data    : WHO Global Tuberculosis Programme (public CSV database)
-
-Run with:  streamlit run app.py
+Author : Mohamad Ali Ahmad  |  MSBA 382 — Healthcare Analytics
+Data   : WHO Global Tuberculosis Programme (public database)
 """
-
-import io
+import os
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
-# ----------------------------------------------------------------------------
-# 0. PAGE CONFIG & THEME
-# ----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Global TB Burden Dashboard",
-    page_icon="🫁",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="Global TB Burden — Executive Decision Dashboard",
+                   page_icon="🫁", layout="wide", initial_sidebar_state="expanded")
 
-PRIMARY = "#0E4D64"     # deep teal
-ACCENT = "#E4572E"      # signal red/orange
-GOOD = "#2A9D8F"
-GREY = "#6c757d"
+NAVY = "#0E3A4F"; TEAL = "#0E7C86"; ACCENT = "#E4572E"; GOOD = "#2A9D8F"
+INK = "#1A2B33"; GREY = "#5B6B72"
 
-CUSTOM_CSS = f"""
+st.markdown(f"""
 <style>
-    .main {{ background-color: #F7F9FA; }}
-    h1, h2, h3 {{ color: {PRIMARY}; }}
-    .stMetric {{ background:#FFFFFF; border:1px solid #e6e6e6; border-radius:12px;
-                 padding:14px 14px 6px 14px; box-shadow:0 1px 3px rgba(0,0,0,.05); }}
-    .insight {{ background:#FFFFFF; border-left:5px solid {ACCENT}; padding:14px 18px;
-                border-radius:6px; margin:8px 0; box-shadow:0 1px 3px rgba(0,0,0,.05); }}
-    .src {{ color:{GREY}; font-size:0.8rem; }}
+    .main {{ background:#F6F8FA; }}
+    h1,h2,h3 {{ color:{NAVY}; }}
     div[data-testid="stSidebarNav"] {{ display:none; }}
+    div[data-testid="stMetric"] {{ background:#FFFFFF; border:1px solid #E3E9EC;
+        border-radius:12px; padding:16px 16px 8px 16px; box-shadow:0 1px 3px rgba(0,0,0,.05); }}
+    .hero {{ background:{NAVY}; color:#fff; border-radius:14px; padding:22px 26px; }}
+    .hero h1 {{ color:#fff; margin:0; font-size:30px; }}
+    .hero p {{ color:#CFE0E6; margin:6px 0 0 0; font-size:15px; }}
+    .insight {{ background:#FFFFFF; border-left:5px solid {ACCENT}; padding:14px 18px;
+        border-radius:8px; margin:6px 0; box-shadow:0 1px 3px rgba(0,0,0,.05); }}
+    .gapcard {{ background:#FFF1ED; border:1px solid #F6D2C6; border-radius:12px;
+        padding:18px 22px; text-align:center; min-height:250px; display:flex;
+        flex-direction:column; justify-content:center; align-items:center; }}
+    .gapnum {{ color:{ACCENT}; font-size:42px; font-weight:800; line-height:1; }}
+    .decision {{ background:#F2F8F9; border:1px solid #D4E4E7; border-left:6px solid {TEAL};
+        border-radius:8px; padding:14px 18px; margin:10px 0; font-size:14px; line-height:1.55; }}
+    .dl {{ display:inline-block; min-width:132px; font-weight:800; color:{NAVY};
+        text-transform:uppercase; font-size:10.5px; letter-spacing:.6px; vertical-align:top; }}
+    .dt {{ display:inline-block; width:calc(100% - 140px); vertical-align:top; }}
+    .biz {{ background:#FFFFFF; border:1px solid #E3E9EC; border-radius:12px; padding:6px 20px 14px 20px;
+        box-shadow:0 1px 3px rgba(0,0,0,.05); }}
+    .bizrow {{ margin:9px 0; font-size:14px; line-height:1.5; }}
+    .bizq {{ font-weight:800; color:{ACCENT}; }}
+    .src {{ color:{GREY}; font-size:0.8rem; }}
 </style>
-"""
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-# ----------------------------------------------------------------------------
-# 1. DATA LAYER  (live WHO download -> cached -> local fallback)
-# ----------------------------------------------------------------------------
-import os
 
+def decision_box(obs, interp, impl, action, monitor):
+    rows = [("Observation", obs), ("What it means", interp), ("Why it matters", impl),
+            ("Recommendation", action), ("Monitor", monitor)]
+    html = "<div class='decision'>"
+    for lbl, txt in rows:
+        html += f"<div><span class='dl'>{lbl}</span><span class='dt'>{txt}</span></div>"
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------- DATA LAYER
 WHO = "https://extranet.who.int/tme/generateCSV.asp?ds="
-URLS = {
-    "estimates":  WHO + "estimates",
-    "age_sex":    WHO + "estimates_age_sex",
-    "dr":         WHO + "mdr_rr_estimates",
-    "outcomes":   WHO + "outcomes",
-}
-# Bundled (committed) files — see prepare_data.py to (re)generate the full set.
-LOCAL = {
-    "estimates": "data/TB_estimates.csv",
-    "age_sex":   "data/TB_age_sex.csv",
-    "dr":        "data/TB_mdr_rr.csv",
-    "outcomes":  "data/TB_outcomes.csv",
-}
+URLS = {"estimates": WHO + "estimates", "age_sex": WHO + "estimates_age_sex",
+        "dr": WHO + "mdr_rr_estimates", "outcomes": WHO + "outcomes"}
+LOCAL = {"estimates": "data/TB_estimates.csv", "age_sex": "data/TB_age_sex.csv",
+         "dr": "data/TB_mdr_rr.csv", "outcomes": "data/TB_outcomes.csv"}
 LOCAL_SAMPLE = "data/estimates_sample.csv"
-
-REGION_NAMES = {
-    "AFR": "Africa", "AMR": "Americas", "EMR": "Eastern Mediterranean",
-    "EUR": "Europe", "SEA": "South-East Asia", "WPR": "Western Pacific",
-}
+REGION_NAMES = {"AFR": "Africa", "AMR": "Americas", "EMR": "Eastern Mediterranean",
+                "EUR": "Europe", "SEA": "South-East Asia", "WPR": "Western Pacific"}
 
 
-def _read(key: str):
-    """Load a dataset: bundled local file first (repo is self-contained),
-    then live WHO download, returning (dataframe_or_None, source_label)."""
+def _read(key):
     path = LOCAL.get(key)
     if path and os.path.exists(path):
         try:
-            return pd.read_csv(path, low_memory=False), "bundled"
+            return pd.read_csv(path, low_memory=False)
         except Exception:
             pass
     try:
-        return pd.read_csv(URLS[key], low_memory=False), "live"
+        return pd.read_csv(URLS[key], low_memory=False)
     except Exception:
-        return None, "unavailable"
+        return None
 
 
-@st.cache_data(ttl=60 * 60 * 24, show_spinner="Loading WHO TB estimates…")
-def load_estimates() -> tuple[pd.DataFrame, str]:
-    """Return (dataframe, source_label). bundled -> live -> sample."""
-    df, source = _read("estimates")
+@st.cache_data(ttl=86400, show_spinner="Loading WHO TB data…")
+def load_estimates():
+    df = _read("estimates")
+    src = "WHO database"
     if df is None:
-        df, source = pd.read_csv(LOCAL_SAMPLE), "offline sample"
+        df, src = pd.read_csv(LOCAL_SAMPLE), "offline sample"
     df = df.rename(columns={"g_whoregion": "region"})
     df["region_name"] = df["region"].map(REGION_NAMES).fillna(df["region"])
-    for col in ["e_inc_num", "e_inc_100k", "e_mort_num", "e_mort_100k",
-                "e_inc_tbhiv_num", "c_cdr", "c_newinc_100k", "e_pop_num"]:
-        if col not in df.columns:
-            df[col] = np.nan
-    return df, source
+    for c in ["e_inc_num", "e_inc_100k", "e_mort_num", "e_mort_100k",
+              "e_inc_tbhiv_num", "c_cdr", "c_newinc_100k", "e_pop_num"]:
+        if c not in df.columns:
+            df[c] = np.nan
+    return df, src
 
 
-@st.cache_data(ttl=60 * 60 * 24, show_spinner="Loading age/sex breakdown…")
-def load_age_sex() -> pd.DataFrame | None:
-    df, _ = _read("age_sex")
-    return df
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_age_sex():
+    return _read("age_sex")
 
 
-@st.cache_data(ttl=60 * 60 * 24, show_spinner="Loading drug-resistance estimates…")
-def load_dr() -> pd.DataFrame | None:
-    df, _ = _read("dr")
-    return df
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_dr():
+    return _read("dr")
 
 
-def fmt(n, suffix=""):
-    """Human-friendly large-number formatting."""
+def fmt(n, s=""):
     if pd.isna(n):
         return "n/a"
     n = float(n)
-    if abs(n) >= 1e9:
-        return f"{n/1e9:.2f}B{suffix}"
-    if abs(n) >= 1e6:
-        return f"{n/1e6:.2f}M{suffix}"
-    if abs(n) >= 1e3:
-        return f"{n/1e3:.0f}K{suffix}"
-    return f"{n:,.0f}{suffix}"
+    if abs(n) >= 1e9: return f"{n/1e9:.2f}B{s}"
+    if abs(n) >= 1e6: return f"{n/1e6:.2f}M{s}"
+    if abs(n) >= 1e3: return f"{n/1e3:.0f}K{s}"
+    return f"{n:,.0f}{s}"
 
 
-# ----------------------------------------------------------------------------
-# 2. AUTH GATE
-# ----------------------------------------------------------------------------
-APP_PASSWORD = "tb2024"   # demo gate; change or wire to st.secrets for production
+# ---------------------------------------------------------------- AUTH
+APP_PASSWORD = "tb2024"
 
 
 def login_gate():
-    st.markdown("<br>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1, 1.2, 1])
-    with c2:
-        st.markdown(f"<h1 style='text-align:center'>🫁 Global TB Burden Dashboard</h1>",
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    _, c, _ = st.columns([1, 1.3, 1])
+    with c:
+        st.markdown("<h1 style='text-align:center'>🫁 Global TB Burden Dashboard</h1>",
                     unsafe_allow_html=True)
-        st.markdown(
-            "<p style='text-align:center;color:#6c757d'>A decision-support tool for "
-            "tuberculosis control. Built on the WHO Global TB Programme database.</p>",
-            unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center;color:#5B6B72'>Executive decision-support "
+                    "for tuberculosis control · WHO Global TB Programme data</p>",
+                    unsafe_allow_html=True)
         with st.form("login"):
-            pw = st.text_input("Access code", type="password",
-                               placeholder="Enter access code")
+            pw = st.text_input("Access code", type="password", placeholder="Enter access code")
             ok = st.form_submit_button("Enter dashboard", use_container_width=True)
         st.caption("Demo access code: **tb2024**")
         if ok:
@@ -165,321 +151,305 @@ if not st.session_state.auth:
     login_gate()
     st.stop()
 
-# ----------------------------------------------------------------------------
-# 3. LOAD DATA + SIDEBAR FILTERS
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------- LOAD + NAV
 est, source = load_estimates()
 years = sorted(est["year"].dropna().unique().astype(int))
 regions = sorted(est["region_name"].dropna().unique())
+default_year = 2023 if 2023 in years else int(max(years))
 
-st.sidebar.title("🫁 TB Dashboard")
-page = st.sidebar.radio(
-    "Navigate",
-    ["Executive Overview", "Trend Analysis", "Geographic Map",
-     "Age & Sex", "Drug-Resistant TB & HIV", "Care Cascade",
-     "Predictive Analysis", "Methodology & Data", "Insights & Recommendations"],
-)
-
+st.sidebar.title("🫁 TB Burden")
+page = st.sidebar.radio("Go to", [
+    "🏠 Executive Home", "📈 Burden & Trends", "🗺️ Geography & Demographics",
+    "🔬 Drivers & Care Gap", "🔮 Forecast", "📋 Methodology & Recommendations"])
 st.sidebar.markdown("---")
-st.sidebar.subheader("Global filters")
+st.sidebar.subheader("Filters")
 sel_regions = st.sidebar.multiselect("WHO region", regions, default=regions)
 yr_min, yr_max = int(min(years)), int(max(years))
-sel_year = st.sidebar.slider("Reporting year", yr_min, yr_max, yr_max)
+sel_year = st.sidebar.slider("Reporting year", yr_min, yr_max, default_year)
 sel_range = st.sidebar.slider("Trend window", yr_min, yr_max, (yr_min, yr_max))
+st.sidebar.caption(f"Data: {source} — WHO Global TB Programme.")
 
-if source == "offline sample":
-    st.sidebar.warning("⚠️ Running on the small offline **sample**. Run "
-                       "`python prepare_data.py` to bundle the full WHO dataset, "
-                       "or connect to the internet and press Reload.")
-elif source == "bundled":
-    st.sidebar.success("✅ Full WHO dataset (bundled in repo).")
-else:
-    st.sidebar.success("✅ Live WHO data loaded.")
-st.sidebar.markdown(
-    "<span class='src'>Source: WHO Global TB Programme, "
-    "Global Tuberculosis Report.</span>", unsafe_allow_html=True)
-
-# Guard: at least one region must be selected
 if not sel_regions:
-    st.warning("Select at least one WHO region in the sidebar to display the dashboard.")
+    st.warning("Select at least one WHO region in the sidebar.")
     st.stop()
 
-# Filtered frames
-f = est[est["region_name"].isin(sel_regions)].copy()
-fy = f[f["year"] == sel_year].copy()
-ftrend = f[(f["year"] >= sel_range[0]) & (f["year"] <= sel_range[1])].copy()
 
-
-def world_year(df, year):
-    """Global totals/derived rates for a given year across all regions in data."""
+def world_year(year):
     d = est[est["year"] == year]
+    inc, mort = d["e_inc_num"].sum(), d["e_mort_num"].sum()
+    hiv, pop = d["e_inc_tbhiv_num"].sum(), d["e_pop_num"].sum()
+    rate = inc / pop * 1e5 if pop else np.nan
+    return inc, mort, hiv, rate
+
+
+def cascade(year, region_filter=None):
+    d = est[est["year"] == year]
+    if region_filter:
+        d = d[d["region_name"].isin(region_filter)]
     inc = d["e_inc_num"].sum()
-    mort = d["e_mort_num"].sum()
-    hiv = d["e_inc_tbhiv_num"].sum()
-    pop = d["e_pop_num"].sum()
-    inc_rate = inc / pop * 1e5 if pop else np.nan
-    return inc, mort, hiv, inc_rate, pop
+    notified = (d["c_newinc_100k"].fillna(0) / 1e5 * d["e_pop_num"]).sum()
+    if notified <= 0 and d["c_cdr"].notna().any():
+        notified = inc * np.nanmean(d["c_cdr"]) / 100
+    return inc, notified, max(inc - notified, 0)
 
 
-# ----------------------------------------------------------------------------
-# 4. PAGES
-# ----------------------------------------------------------------------------
-def page_overview():
-    st.title("Executive Overview")
-    st.caption(f"Tuberculosis burden snapshot — {sel_year}. "
-               "Tuberculosis is the world's leading cause of death from a single "
-               "infectious agent.")
+# ================================================================ PAGES
+def page_home():
+    inc, mort, hiv, rate = world_year(sel_year)
+    pinc, pmort, *_ = world_year(max(sel_year - 1, yr_min))
+    di = (inc - pinc) / pinc * 100 if pinc else 0
+    dm = (mort - pmort) / pmort * 100 if pmort else 0
+    gi, notified, gap = cascade(sel_year)
+    det = notified / gi * 100 if gi else 0
 
-    inc, mort, hiv, inc_rate, pop = world_year(est, sel_year)
-    prev_inc, prev_mort, *_ = world_year(est, max(sel_year - 1, yr_min))
-    d_inc = (inc - prev_inc) / prev_inc * 100 if prev_inc else 0
-    d_mort = (mort - prev_mort) / prev_mort * 100 if prev_mort else 0
-
+    st.markdown(f"<div class='hero'><h1>Global Tuberculosis Burden — Executive Briefing</h1>"
+                f"<p>The world's leading infectious-disease killer &nbsp;·&nbsp; reporting year "
+                f"{sel_year} &nbsp;·&nbsp; source: WHO Global Tuberculosis Programme</p></div>",
+                unsafe_allow_html=True)
+    st.markdown("")
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Estimated new cases (incidence)", fmt(inc), f"{d_inc:+.1f}% vs prior yr")
-    k2.metric("Estimated TB deaths", fmt(mort), f"{d_mort:+.1f}% vs prior yr",
-              delta_color="inverse")
-    k3.metric("Incidence rate", f"{inc_rate:.0f} /100k")
+    k1.metric("New cases (incidence)", fmt(inc), f"{di:+.1f}% vs prior year")
+    k2.metric("TB deaths", fmt(mort), f"{dm:+.1f}% vs prior year", delta_color="inverse")
+    k3.metric("Case-detection rate", f"{det:.0f}%")
     k4.metric("HIV-positive TB cases", fmt(hiv))
 
-    st.markdown("---")
-    c1, c2 = st.columns([1.4, 1])
+    st.markdown("####  ")
+    cL, cR = st.columns([1.5, 1])
+    with cL:
+        st.markdown("**The core problem — the detection gap**")
+        fig = go.Figure(go.Funnel(y=["Developed TB", "Diagnosed & reported"], x=[gi, notified],
+                        textinfo="value+percent initial", marker=dict(color=[NAVY, GOOD])))
+        fig.update_layout(height=250, margin=dict(t=10, b=10, l=10, r=10))
+        st.plotly_chart(fig, use_container_width=True)
+    with cR:
+        st.markdown("**The cost of the gap**")
+        st.markdown("<div class='gapcard'><div class='gapnum'>" + fmt(gap) + "</div>"
+                    "<div style='margin-top:8px'>people who developed TB in " + str(sel_year) +
+                    " were never diagnosed — untreated, and still transmitting.</div></div>",
+                    unsafe_allow_html=True)
+
+    st.markdown("####  ")
+    st.subheader("The business case at a glance")
+    qa = [
+        ("What is the health problem?",
+         "Tuberculosis — an airborne, curable bacterial infection that is again the world's "
+         "deadliest single infectious disease."),
+        ("How large / serious is the burden?",
+         f"~{fmt(inc)} new cases and ~{fmt(mort)} deaths in {sel_year}; a disease that is "
+         "preventable and curable, yet still kills over a million people a year."),
+        ("Who is most affected?",
+         "Working-age adults, skewed toward men (~55–60% of adult cases), plus people living "
+         "with HIV — i.e., the economically productive population."),
+        ("Where / when is it concentrated?",
+         "Africa and South-East Asia, with roughly two-thirds of cases in just eight "
+         "high-burden countries — the burden is not evenly spread."),
+        ("What is the most important insight?",
+         f"The detection gap: only ~{det:.0f}% of cases are diagnosed, leaving ~{fmt(gap)} "
+         "people undiagnosed who drive ongoing transmission and death."),
+        ("What action should be taken?",
+         "Concentrate active case-finding and rapid molecular testing in high-burden "
+         "geographies; integrate TB/HIV services; scale drug-susceptibility testing."),
+        ("What is the expected value of acting?",
+         "Each undiagnosed person with pulmonary TB can infect an estimated 10–15 contacts a "
+         "year, so closing the gap cuts future cases, deaths, cost, and care demand."),
+    ]
+    rows = "".join(f"<div class='bizrow'><span class='bizq'>{q}</span><br>{a}</div>" for q, a in qa)
+    st.markdown(f"<div class='biz'>{rows}</div>", unsafe_allow_html=True)
+
+    st.markdown("####  ")
+    c1, c2 = st.columns(2)
     with c1:
-        st.subheader("Global incidence vs. mortality over time")
-        g = (est.groupby("year")[["e_inc_num", "e_mort_num"]].sum().reset_index())
+        st.markdown("**Global trend — new cases vs. deaths**")
+        g = est.groupby("year")[["e_inc_num", "e_mort_num"]].sum().reset_index()
         fig = go.Figure()
-        fig.add_bar(x=g["year"], y=g["e_inc_num"], name="New cases",
-                    marker_color=PRIMARY)
+        fig.add_bar(x=g["year"], y=g["e_inc_num"], name="New cases", marker_color=TEAL)
         fig.add_trace(go.Scatter(x=g["year"], y=g["e_mort_num"], name="Deaths",
                                  yaxis="y2", line=dict(color=ACCENT, width=3)))
-        fig.update_layout(
-            yaxis=dict(title="New cases"),
-            yaxis2=dict(title="Deaths", overlaying="y", side="right"),
-            legend=dict(orientation="h", y=1.1), height=380,
-            margin=dict(t=10, b=10), plot_bgcolor="white")
+        fig.update_layout(height=300, yaxis2=dict(overlaying="y", side="right"),
+                          legend=dict(orientation="h", y=1.2), margin=dict(t=30, b=40, l=10, r=10),
+                          plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
     with c2:
-        st.subheader(f"Burden by region — {sel_year}")
-        r = (est[est["year"] == sel_year].groupby("region_name")["e_inc_num"]
-             .sum().sort_values(ascending=True).reset_index())
-        fig = px.bar(r, x="e_inc_num", y="region_name", orientation="h",
-                     color="e_inc_num", color_continuous_scale="Teal",
-                     labels={"e_inc_num": "New cases", "region_name": ""})
-        fig.update_layout(height=380, coloraxis_showscale=False,
-                          margin=dict(t=10, b=10), plot_bgcolor="white")
+        st.markdown(f"**Where the burden sits — {sel_year}**")
+        rr = (est[est["year"] == sel_year].groupby("region_name")["e_inc_num"]
+              .sum().sort_values().reset_index())
+        fig = px.bar(rr, x="e_inc_num", y="region_name", orientation="h", color="e_inc_num",
+                     color_continuous_scale="Teal", labels={"e_inc_num": "New cases", "region_name": ""})
+        fig.update_layout(height=300, coloraxis_showscale=False, margin=dict(t=30, b=40, l=10, r=10),
+                          plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
+    st.caption("Use the sidebar for the detailed analysis — every page carries a decision box "
+               "(observation → action → metric to monitor).")
 
+
+def page_burden():
+    st.title("Burden & Trends")
+    st.caption(f"Decision supported: capacity, procurement and demand planning · "
+               f"{', '.join(sel_regions)} · {sel_range[0]}–{sel_range[1]}")
+    fy = est[(est["year"] == sel_year) & (est["region_name"].isin(sel_regions))]
     st.subheader(f"Highest-burden countries — {sel_year}")
-    top = (fy.sort_values("e_inc_num", ascending=False)
-           .head(15)[["country", "region_name", "e_inc_num", "e_inc_100k",
-                      "e_mort_num", "c_cdr"]])
-    top.columns = ["Country", "Region", "New cases", "Incidence /100k",
-                   "Deaths", "Case detection %"]
+    top = (fy.sort_values("e_inc_num", ascending=False).head(15)
+           [["country", "region_name", "e_inc_num", "e_inc_100k", "e_mort_num", "c_cdr"]])
+    top.columns = ["Country", "Region", "New cases", "Incidence /100k", "Deaths", "Case detection %"]
     st.dataframe(top, use_container_width=True, hide_index=True)
 
-    st.markdown(
-        "<div class='insight'><b>So what?</b> A small number of high-burden "
-        "countries account for the majority of global cases. Targeting case-finding "
-        "and treatment resources at these geographies yields the largest reduction "
-        "in the global burden.</div>", unsafe_allow_html=True)
-
-
-def page_trend():
-    st.title("Trend Analysis")
-    st.caption(f"Filtered to: {', '.join(sel_regions)} | {sel_range[0]}–{sel_range[1]}")
-
-    metric = st.selectbox("Metric", {
-        "Incidence rate (/100k)": "e_inc_100k",
-        "New cases (number)": "e_inc_num",
-        "Mortality rate (/100k)": "e_mort_100k",
-        "Deaths (number)": "e_mort_num",
-    }.keys())
-    col = {"Incidence rate (/100k)": "e_inc_100k", "New cases (number)": "e_inc_num",
-           "Mortality rate (/100k)": "e_mort_100k", "Deaths (number)": "e_mort_num"}[metric]
-
+    st.subheader("Trend explorer")
+    labels = {"Incidence rate (/100k)": "e_inc_100k", "New cases (number)": "e_inc_num",
+              "Mortality rate (/100k)": "e_mort_100k", "Deaths (number)": "e_mort_num"}
+    metric = st.selectbox("Metric", list(labels.keys()))
+    col = labels[metric]
     agg = "mean" if "100k" in col else "sum"
-    g = (ftrend.groupby(["year", "region_name"])[col].agg(agg).reset_index())
+    ftr = est[(est["region_name"].isin(sel_regions)) &
+              (est["year"] >= sel_range[0]) & (est["year"] <= sel_range[1])]
+    g = ftr.groupby(["year", "region_name"])[col].agg(agg).reset_index()
     fig = px.line(g, x="year", y=col, color="region_name", markers=True,
                   labels={col: metric, "region_name": "Region", "year": "Year"})
-    fig.update_layout(height=440, plot_bgcolor="white", legend_title="Region")
+    fig.update_layout(height=400, plot_bgcolor="white")
     st.plotly_chart(fig, use_container_width=True)
-
-    countries = sorted(ftrend["country"].unique())
-    pick = st.multiselect("Compare specific countries", countries,
-                          default=countries[:min(4, len(countries))])
+    pick = st.multiselect("Compare specific countries", sorted(ftr["country"].unique()))
     if pick:
-        gc = ftrend[ftrend["country"].isin(pick)]
+        gc = ftr[ftr["country"].isin(pick)]
         fig2 = px.line(gc, x="year", y=col, color="country", markers=True,
                        labels={col: metric, "year": "Year", "country": "Country"})
-        fig2.update_layout(height=420, plot_bgcolor="white")
+        fig2.update_layout(height=380, plot_bgcolor="white")
         st.plotly_chart(fig2, use_container_width=True)
-    st.markdown(
-        "<div class='insight'><b>Reading the trend:</b> falling rates with rising "
-        "absolute cases usually signal population growth outpacing programmatic "
-        "gains — progress per capita can mask a growing operational caseload.</div>",
-        unsafe_allow_html=True)
+    decision_box(
+        "A few countries and regions account for the bulk of cases, and per-capita rates can fall "
+        "while absolute case counts stay flat or rise.",
+        "Falling rates with steady/rising counts means population growth is offsetting programmatic "
+        "gains — the operational caseload is not shrinking as fast as the rate suggests.",
+        "A healthcare centre's real workload, staffing and drug procurement are driven by absolute "
+        "cases, not by rates — planning on rates alone under-provisions services.",
+        "Base capacity, staffing and procurement plans on the absolute case trend in your catchment "
+        "and the high-burden geographies above, not on the rate trend.",
+        "Year-over-year change in notified cases and the case-detection rate in your catchment.")
 
 
-def page_map():
-    st.title("Geographic Distribution")
-    metric = st.radio("Metric", ["Incidence rate (/100k)", "Total new cases",
-                                  "Mortality rate (/100k)"], horizontal=True)
+def page_geo():
+    st.title("Geography & Demographics")
+    st.caption("Decision supported: where to target screening and which groups to prioritise.")
+    metric = st.radio("Map metric", ["Incidence rate (/100k)", "Total new cases",
+                                      "Mortality rate (/100k)"], horizontal=True)
     col = {"Incidence rate (/100k)": "e_inc_100k", "Total new cases": "e_inc_num",
            "Mortality rate (/100k)": "e_mort_100k"}[metric]
-    d = est[est["year"] == sel_year]
-    d = d[d["region_name"].isin(sel_regions)]
-    fig = px.choropleth(
-        d, locations="iso3", color=col, hover_name="country",
-        color_continuous_scale="OrRd", locationmode="ISO-3",
-        labels={col: metric})
-    fig.update_layout(height=560, margin=dict(t=10, b=10),
+    d = est[(est["year"] == sel_year) & (est["region_name"].isin(sel_regions))]
+    fig = px.choropleth(d, locations="iso3", color=col, hover_name="country",
+                        color_continuous_scale="OrRd", locationmode="ISO-3", labels={col: metric})
+    fig.update_layout(height=460, margin=dict(t=10, b=10),
                       geo=dict(showframe=False, projection_type="natural earth"))
     st.plotly_chart(fig, use_container_width=True)
-    st.markdown(
-        "<div class='insight'><b>Geographic concentration:</b> TB incidence is "
-        "highly concentrated in Africa and South-East Asia. Mapping rate vs. absolute "
-        "count tells two different stories — rate flags where risk is highest, count "
-        "flags where the most people need services.</div>", unsafe_allow_html=True)
 
-
-def page_age_sex():
-    st.title("Age & Sex Distribution")
+    st.subheader("Age & sex distribution")
     df = load_age_sex()
-    if df is None:
-        st.info("This page reads the WHO age/sex disaggregated file at runtime. "
-                "It requires an internet connection (it could not be reached now). "
-                "Connect and press **Reload** in the top-right menu.")
-        st.markdown(
-            "<div class='insight'>Expected pattern (WHO global estimates): TB notably "
-            "affects <b>adult men</b> more than women — men account for roughly "
-            "<b>~55–60%</b> of adult cases globally. The 15–44 working-age band carries "
-            "the largest share, which is why TB has an outsized economic impact.</div>",
-            unsafe_allow_html=True)
-        return
-    df = df[df["year"] == df["year"].max()]
-    if "sex" in df and "age_group" in df and "best" in df:
-        inc = df[df.get("measure", "inc").astype(str).str.contains("inc", case=False, na=False)] \
-            if "measure" in df else df
-        order = ["0-4", "5-14", "15-24", "25-34", "35-44", "45-54", "55-64", "65plus"]
-        piv = (inc[inc["sex"].isin(["m", "f"])]
-               .groupby(["age_group", "sex"])["best"].sum().reset_index())
-        piv["age_group"] = pd.Categorical(piv["age_group"], categories=order, ordered=True)
-        piv = piv.sort_values("age_group")
-        m = piv[piv["sex"] == "m"]
-        fpop = piv[piv["sex"] == "f"]
-        fig = go.Figure()
-        fig.add_bar(y=m["age_group"].astype(str), x=-m["best"], name="Male",
-                    orientation="h", marker_color=PRIMARY)
-        fig.add_bar(y=fpop["age_group"].astype(str), x=fpop["best"], name="Female",
-                    orientation="h", marker_color=ACCENT)
-        fig.update_layout(barmode="relative", height=480, plot_bgcolor="white",
-                          title="TB incidence population pyramid (latest year)",
-                          xaxis_title="Estimated cases (male ◄ | ► female)")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.dataframe(df.head(50), use_container_width=True)
-    st.markdown(
-        "<div class='insight'><b>Why it matters:</b> a male, working-age skew argues "
-        "for workplace and community case-finding (not just clinic-based passive "
-        "detection) and gender-sensitive messaging.</div>", unsafe_allow_html=True)
+    drawn = False
+    if df is not None and {"sex", "age_group", "best"}.issubset(df.columns):
+        try:
+            dd = df[df["year"] == df["year"].max()]
+            if "measure" in dd.columns:
+                dd = dd[dd["measure"].astype(str).str.contains("inc", case=False, na=False)]
+            order = ["0-4", "5-14", "15-24", "25-34", "35-44", "45-54", "55-64", "65plus"]
+            piv = (dd[dd["sex"].isin(["m", "f"])].groupby(["age_group", "sex"])["best"]
+                   .sum().reset_index())
+            piv = piv[piv["age_group"].isin(order)]
+            piv["age_group"] = pd.Categorical(piv["age_group"], categories=order, ordered=True)
+            piv = piv.sort_values("age_group")
+            m, fpop = piv[piv["sex"] == "m"], piv[piv["sex"] == "f"]
+            fig = go.Figure()
+            fig.add_bar(y=m["age_group"].astype(str), x=-m["best"], name="Male",
+                        orientation="h", marker_color=NAVY)
+            fig.add_bar(y=fpop["age_group"].astype(str), x=fpop["best"], name="Female",
+                        orientation="h", marker_color=ACCENT)
+            fig.update_layout(barmode="relative", height=420, plot_bgcolor="white",
+                              title="TB incidence by age and sex (latest year)",
+                              xaxis_title="Estimated cases  (male ◄ | ► female)")
+            st.plotly_chart(fig, use_container_width=True)
+            drawn = True
+        except Exception:
+            drawn = False
+    if not drawn:
+        st.info("Age/sex view loads the WHO age-sex file at runtime (needs internet on first load).")
+    decision_box(
+        "TB is concentrated in specific countries/regions and skews to working-age men "
+        "(~55–60% of adult cases).",
+        "Risk is not evenly distributed; passive, clinic-based detection systematically misses "
+        "working-age men who present late.",
+        "Spreading resources evenly wastes them; untreated working-age cases drive both "
+        "transmission and lost economic productivity.",
+        "Prioritise screening budget in the high-burden areas on the map and add active "
+        "community/workplace screening aimed at men, rather than clinic-only detection.",
+        "Share of cases found by active vs passive case-finding, and screening coverage in "
+        "priority districts.")
 
 
-def page_dr():
-    st.title("Drug-Resistant TB & TB/HIV Co-infection")
+def page_drivers():
+    st.title("Drivers & Care Gap")
+    st.caption("Decision supported: where to invest to cut deaths and stop transmission.")
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("TB/HIV co-infection share")
-        g = est[est["year"] == sel_year]
-        g = g[g["region_name"].isin(sel_regions)]
+        g = est[(est["year"] == sel_year) & (est["region_name"].isin(sel_regions))]
         gg = g.groupby("region_name")[["e_inc_tbhiv_num", "e_inc_num"]].sum().reset_index()
-        gg["hiv_share"] = gg["e_inc_tbhiv_num"] / gg["e_inc_num"] * 100
-        fig = px.bar(gg.sort_values("hiv_share"), x="hiv_share", y="region_name",
-                     orientation="h", color="hiv_share",
-                     color_continuous_scale="Reds",
-                     labels={"hiv_share": "% of TB cases HIV+", "region_name": ""})
-        fig.update_layout(height=380, coloraxis_showscale=False, plot_bgcolor="white")
+        gg["share"] = gg["e_inc_tbhiv_num"] / gg["e_inc_num"] * 100
+        fig = px.bar(gg.sort_values("share"), x="share", y="region_name", orientation="h",
+                     color="share", color_continuous_scale="Reds",
+                     labels={"share": "% of TB cases HIV+", "region_name": ""})
+        fig.update_layout(height=340, coloraxis_showscale=False, plot_bgcolor="white")
         st.plotly_chart(fig, use_container_width=True)
     with c2:
         st.subheader("Drug-resistant TB (MDR/RR)")
         dr = load_dr()
-        if dr is None:
-            st.info("The MDR/RR-TB estimates file is loaded live from WHO and could "
-                    "not be reached now. Connect to the internet and Reload.")
-            st.markdown(
-                "<div class='insight'>Globally about <b>3–4%</b> of new TB cases and "
-                "~<b>18%</b> of previously treated cases have multidrug/rifampicin-"
-                "resistant TB. Only a minority are detected and started on treatment — "
-                "a critical gap.</div>", unsafe_allow_html=True)
-        else:
+        shown = False
+        if dr is not None:
             try:
-                dd = dr.copy()
-                if "year" in dd.columns:
-                    dd = dd[dd["year"] == dd["year"].max()]
-                rrcol = next((c for c in ["e_inc_rr_num", "e_inc_mdr_num", "e_rr_num"]
-                              if c in dd.columns), None)
-                if rrcol and "iso3" in dd.columns:
+                dd = dr[dr["year"] == dr["year"].max()] if "year" in dr.columns else dr
+                rc = next((c for c in ["e_inc_rr_num", "e_inc_mdr_num", "e_rr_num"]
+                           if c in dd.columns), None)
+                if rc and "iso3" in dd.columns:
                     reg = est[["iso3", "region_name"]].drop_duplicates()
-                    m = dd.merge(reg, on="iso3", how="left")
-                    m = m[m["region_name"].isin(sel_regions)]
-                    gg2 = (m.groupby("region_name")[rrcol].sum()
-                           .sort_values().reset_index())
-                    fig = px.bar(gg2, x=rrcol, y="region_name", orientation="h",
-                                 color=rrcol, color_continuous_scale="OrRd",
-                                 labels={rrcol: "Estimated MDR/RR-TB cases",
-                                         "region_name": ""})
-                    fig.update_layout(height=380, coloraxis_showscale=False,
-                                      plot_bgcolor="white", margin=dict(t=10, b=10))
+                    mm = dd.merge(reg, on="iso3", how="left")
+                    mm = mm[mm["region_name"].isin(sel_regions)]
+                    ggr = mm.groupby("region_name")[rc].sum().sort_values().reset_index()
+                    fig = px.bar(ggr, x=rc, y="region_name", orientation="h", color=rc,
+                                 color_continuous_scale="OrRd",
+                                 labels={rc: "Estimated MDR/RR-TB cases", "region_name": ""})
+                    fig.update_layout(height=340, coloraxis_showscale=False, plot_bgcolor="white")
                     st.plotly_chart(fig, use_container_width=True)
-                    st.caption("Estimated multidrug/rifampicin-resistant TB cases "
-                               "by region (latest WHO estimation year).")
-                else:
-                    st.info("MDR/RR file loaded but expected columns not found; "
-                            "showing a data preview.")
-                    st.dataframe(dd.head(20), use_container_width=True)
+                    shown = True
             except Exception:
-                st.info("Could not parse the MDR/RR file; globally ~3–4% of new and "
-                        "~18% of previously treated cases are drug-resistant.")
-    st.markdown(
-        "<div class='insight'><b>Strategic read:</b> HIV and drug resistance are the "
-        "two factors that turn a curable disease into a fatal, costly one. Integrating "
-        "TB with HIV programmes and scaling rapid molecular drug-susceptibility testing "
-        "are the highest-leverage interventions.</div>", unsafe_allow_html=True)
+                shown = False
+        if not shown:
+            st.markdown("<div class='insight'>Globally ~<b>3–4%</b> of new and ~<b>18%</b> of "
+                        "previously treated cases are multidrug/rifampicin-resistant; only a "
+                        "minority are detected and treated.</div>", unsafe_allow_html=True)
 
-
-def page_cascade():
-    st.title("The TB Care Cascade")
-    st.caption("From estimated disease to people on treatment. Every drop is a "
-               "missed opportunity to cure and to stop transmission.")
-    d = est[(est["year"] == sel_year) & (est["region_name"].isin(sel_regions))]
-    inc = d["e_inc_num"].sum()
-    # Notified ≈ case-detection rate (c_cdr, %) × incidence
-    cdr = np.nanmean(d["c_cdr"]) if d["c_cdr"].notna().any() else np.nan
-    notified = inc * (cdr / 100) if not np.isnan(cdr) else np.nan
-    stages = ["Estimated new cases", "Detected & notified", "Successfully treated*"]
-    vals = [inc, notified if not np.isnan(notified) else inc * 0.75,
-            (notified if not np.isnan(notified) else inc * 0.75) * 0.85]
-    fig = go.Figure(go.Funnel(y=stages, x=vals, textinfo="value+percent initial",
-                              marker=dict(color=[PRIMARY, "#2A7F95", GOOD])))
-    fig.update_layout(height=420, margin=dict(t=10, b=10))
+    st.subheader("The TB care cascade")
+    gi, notified, gap = cascade(sel_year, sel_regions)
+    treated = notified * 0.85
+    fig = go.Figure(go.Funnel(y=["Estimated new cases", "Detected & notified", "Successfully treated*"],
+                    x=[gi, notified, treated], textinfo="value+percent initial",
+                    marker=dict(color=[NAVY, TEAL, GOOD])))
+    fig.update_layout(height=360, margin=dict(t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("*Treatment-success share is an illustrative ~85% applied to detected "
-               "cases; the live WHO 'outcomes' file gives the country-reported figure.")
-    st.markdown(
-        f"<div class='insight'><b>The gap:</b> at an average case-detection rate of "
-        f"<b>{cdr:.0f}%</b> for the current selection, roughly "
-        f"<b>{fmt(inc-(notified if not np.isnan(notified) else inc*0.75))}</b> people "
-        "with TB are never diagnosed or notified — they continue to transmit. Closing "
-        "the detection gap is the single biggest lever on mortality.</div>",
-        unsafe_allow_html=True)
+    st.caption("*Treatment success shown as an illustrative ~85% of notified cases; the WHO "
+               "'outcomes' file holds country-reported rates.")
+    decision_box(
+        f"For this selection, ~{fmt(gap)} people with TB are never diagnosed, and HIV co-infection "
+        "and drug resistance are concentrated in specific regions.",
+        "Undiagnosed cases are the main engine of transmission and death; HIV and MDR sharply raise "
+        "case-fatality and treatment cost.",
+        "These three factors — under-detection, HIV, resistance — are the largest controllable "
+        "drivers of TB mortality and of future, costlier caseload.",
+        "Scale rapid molecular testing (e.g. GeneXpert) for case-finding, integrate TB/HIV testing "
+        "and treatment, and expand drug-susceptibility testing in the flagged regions.",
+        "Case-detection rate, treatment-success rate, MDR detection coverage, and TB/HIV testing "
+        "coverage, reviewed each cycle.")
 
 
-def page_predict():
-    st.title("Predictive Analysis — Incidence Forecast")
-    st.caption("A transparent trend model projecting TB incidence forward. Shown with "
-               "explicit assumptions — forecasts are planning aids, not certainties.")
-    scope = st.radio("Forecast scope", ["Global", "Single country"], horizontal=True)
+def page_forecast():
+    st.title("Forecast — Incidence Outlook")
+    st.caption("Decision supported: budgeting and the case for investing in control now.")
+    scope = st.radio("Scope", ["Global", "Single country"], horizontal=True)
     horizon = st.slider("Years to forecast", 1, 10, 6)
-
     if scope == "Global":
         s = est.groupby("year")["e_inc_num"].sum()
         title = "Global new TB cases"
@@ -488,127 +458,83 @@ def page_predict():
         s = est[est["country"] == country].groupby("year")["e_inc_num"].sum()
         title = f"New TB cases — {country}"
     s = s[s.index >= 2010]
-    x = s.index.values.astype(float)
-    y = s.values.astype(float)
+    x, y = s.index.values.astype(float), s.values.astype(float)
     if len(x) < 3:
         st.warning("Not enough data points to fit a trend for this selection.")
         return
-    # Simple, explainable linear trend + CAGR sanity band
     coef = np.polyfit(x, y, 1)
-    fut_x = np.arange(x.min(), x.max() + horizon + 1)
-    fit = np.polyval(coef, fut_x)
-    # naive residual band
-    resid = y - np.polyval(coef, x)
-    band = 1.96 * resid.std()
-
+    band = 1.96 * (y - np.polyval(coef, x)).std()
+    fut = np.arange(x.max() + 1, x.max() + horizon + 1)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=x, y=y, mode="markers+lines", name="Observed",
-                             line=dict(color=PRIMARY, width=3)))
-    fut_only = fut_x[fut_x > x.max()]
-    fig.add_trace(go.Scatter(x=fut_only, y=np.polyval(coef, fut_only),
-                             mode="lines", name="Forecast",
+                             line=dict(color=NAVY, width=3)))
+    fig.add_trace(go.Scatter(x=fut, y=np.polyval(coef, fut), mode="lines", name="Forecast",
                              line=dict(color=ACCENT, dash="dash", width=3)))
-    fig.add_trace(go.Scatter(
-        x=np.concatenate([fut_only, fut_only[::-1]]),
-        y=np.concatenate([np.polyval(coef, fut_only) + band,
-                          (np.polyval(coef, fut_only) - band)[::-1]]),
-        fill="toself", fillcolor="rgba(228,87,46,0.15)",
-        line=dict(color="rgba(0,0,0,0)"), name="95% band", showlegend=True))
-    fig.update_layout(title=title, height=460, plot_bgcolor="white",
+    fig.add_trace(go.Scatter(x=np.concatenate([fut, fut[::-1]]),
+                  y=np.concatenate([np.polyval(coef, fut) + band, (np.polyval(coef, fut) - band)[::-1]]),
+                  fill="toself", fillcolor="rgba(228,87,46,0.15)",
+                  line=dict(color="rgba(0,0,0,0)"), name="95% band"))
+    fig.update_layout(title=title, height=440, plot_bgcolor="white",
                       yaxis_title="New cases", xaxis_title="Year")
     st.plotly_chart(fig, use_container_width=True)
-
     slope = coef[0]
-    direction = "declining" if slope < 0 else "rising"
-    st.markdown(
-        f"<div class='insight'><b>Model read-out:</b> the fitted linear trend is "
-        f"<b>{direction}</b> at about <b>{fmt(abs(slope))} cases/year</b>. Projected "
-        f"value in {int(fut_x.max())}: <b>{fmt(np.polyval(coef, fut_x.max()))}</b> "
-        f"(±{fmt(band)}). Method: ordinary least-squares on 2010-onward estimates. "
-        "Limitation: a linear model cannot capture shocks (e.g., COVID-19 disruption) "
-        "or policy change — treat as a baseline scenario.</div>",
-        unsafe_allow_html=True)
+    decision_box(
+        f"On current trend, incidence is {'declining' if slope < 0 else 'rising/flat'} by about "
+        f"{fmt(abs(slope))} cases/year, projecting ~{fmt(np.polyval(coef, fut.max()))} by {int(fut.max())}.",
+        "This baseline trajectory falls short of the WHO End TB milestones (a 50% cut in incidence "
+        "by 2025, 80% by 2030) without accelerated action.",
+        "Without intervention the centre faces sustained or rising demand, cost and patient-risk "
+        "exposure — the 'do nothing' option is not cost-neutral.",
+        "Use this baseline to size multi-year budgets and to justify front-loaded investment in "
+        "case-finding, which bends the curve below the baseline.",
+        "Actual incidence each year vs this forecast and vs the End TB 2025/2030 milestones.")
 
 
 def page_method():
-    st.title("Methodology & Data")
+    st.title("Methodology & Recommendations")
+    st.subheader("Methodology")
     st.markdown(f"""
-**Data source.** All figures are drawn from the **World Health Organization (WHO)
-Global Tuberculosis Programme** public database, which underpins the annual
-*Global Tuberculosis Report*. The dashboard pulls the WHO CSV files live at runtime
-and caches them for 24 hours; an offline sample is bundled so the app always renders.
+**Data.** Secondary, quantitative estimates and country-reported surveillance from the
+**WHO Global Tuberculosis Programme** database (the source behind the annual *Global TB
+Report*) — 204 countries, 2000–present. Current source: `{source}`. No data is fabricated.
 
-**Current data status:** `{source}`.
+**Tools.** Python · pandas · NumPy · Plotly · Streamlit.
 
-**Data type.** Secondary, quantitative, country-level estimates and country-reported
-surveillance data (2000–most recent year).
+**Cleaning & transformation.** Standardised WHO region codes, type-checked numeric fields,
+kept genuine gaps as gaps (no silent imputation), derived the HIV share and the detection
+gap, and joined on ISO-3 codes for mapping.
 
-**Key files used**
-
-| File | What it provides |
-|---|---|
-| `estimates` | Incidence, mortality, TB/HIV, case-detection rate by country & year |
-| `estimates_age_sex` | Incidence disaggregated by age band and sex |
-| `mdr_rr_estimates` | Multidrug/rifampicin-resistant TB estimates |
-| `outcomes` | Treatment-success rates |
-
-**Cleaning & transformation.** Standardised region codes to names, coerced numeric
-fields, handled missing values (kept as gaps rather than imputed), derived metrics
-(HIV share, detection gap, regional aggregates), and joined on ISO-3 codes for mapping.
-
-**Tools.** Python · pandas · NumPy · Plotly · scikit-learn/NumPy (forecast) · Streamlit.
-
-**Limitations.** WHO figures are *modelled estimates* with uncertainty intervals;
-case-detection and notification depend on national reporting capacity; the COVID-19
-period disrupted TB services and data; the forecast is a simple trend baseline.
+**Limitations.** WHO incidence/mortality are modelled estimates with uncertainty intervals;
+notification depends on national reporting capacity; COVID-19 disrupted 2020–21 data; the
+forecast is a simple trend baseline.
 """)
-    st.markdown("<span class='src'>WHO Global TB Programme — "
-                "https://www.who.int/teams/global-programme-on-tuberculosis-and-lung-health/data</span>",
+    st.subheader("Recommendations & monitoring metrics")
+    recos = [
+        ("Close the detection gap first", "Target active case-finding and rapid molecular testing "
+         "to the highest-burden geographies.", "Case-detection rate; cases found via active search."),
+        ("Integrate TB and HIV services", "Co-locate testing and treatment where co-infection is "
+         "highest.", "TB/HIV testing coverage; co-infected on ART."),
+        ("Scale drug-susceptibility testing", "Detect and treat MDR/RR-TB early.",
+         "MDR detection coverage; MDR treatment-success rate."),
+        ("Design for those affected", "Community/workplace screening for working-age men.",
+         "Active- vs passive-found share; screening coverage."),
+        ("Monitor against End TB milestones", "Use the dashboard each cycle and the forecast as a "
+         "budget baseline.", "Incidence & mortality vs 2025/2030 milestones."),
+    ]
+    for t, d, mtr in recos:
+        st.markdown(f"<div class='insight'><b>{t}.</b> {d}<br>"
+                    f"<span class='src'>Monitor: {mtr}</span></div>", unsafe_allow_html=True)
+    st.markdown("<span class='src'>Source: WHO Global Tuberculosis Programme — "
+                "who.int/teams/global-programme-on-tuberculosis-and-lung-health/data</span>",
                 unsafe_allow_html=True)
 
 
-def page_reco():
-    st.title("Insights & Recommendations")
-    inc, mort, hiv, inc_rate, pop = world_year(est, sel_year)
-    st.markdown(f"""
-### What the data tells us
-1. **TB remains a top global killer** — ~{fmt(mort)} deaths and ~{fmt(inc)} new cases
-   in {sel_year}, despite being preventable and curable.
-2. **The burden is geographically concentrated** in Africa and South-East Asia, and a
-   handful of high-burden countries dominate absolute case counts.
-3. **The detection gap is the core problem** — a large share of estimated cases are
-   never diagnosed or notified, sustaining transmission.
-4. **HIV and drug resistance** are the principal drivers of TB mortality.
-
-### Recommendations for a TB programme / decision-maker
-""")
-    recos = [
-        ("Close the case-detection gap", "Scale active case-finding and rapid molecular "
-         "testing (e.g. GeneXpert) in the highest-burden districts, prioritised by the "
-         "map and cascade pages."),
-        ("Integrate TB and HIV services", "Co-locate testing and treatment where TB/HIV "
-         "co-infection share is highest, as flagged in the DR/HIV page."),
-        ("Scale drug-susceptibility testing", "Detect and correctly treat MDR/RR-TB "
-         "early to prevent costly, deadly resistant outbreaks."),
-        ("Target working-age men", "Use the age/sex pattern to design community and "
-         "workplace screening, not just passive clinic detection."),
-        ("Monitor with this dashboard", "Track incidence, detection and mortality "
-         "annually against End-TB milestones; use the forecast as a planning baseline."),
-    ]
-    for t, d in recos:
-        st.markdown(f"<div class='insight'><b>{t}.</b> {d}</div>",
-                    unsafe_allow_html=True)
-
-
 PAGES = {
-    "Executive Overview": page_overview,
-    "Trend Analysis": page_trend,
-    "Geographic Map": page_map,
-    "Age & Sex": page_age_sex,
-    "Drug-Resistant TB & HIV": page_dr,
-    "Care Cascade": page_cascade,
-    "Predictive Analysis": page_predict,
-    "Methodology & Data": page_method,
-    "Insights & Recommendations": page_reco,
+    "🏠 Executive Home": page_home,
+    "📈 Burden & Trends": page_burden,
+    "🗺️ Geography & Demographics": page_geo,
+    "🔬 Drivers & Care Gap": page_drivers,
+    "🔮 Forecast": page_forecast,
+    "📋 Methodology & Recommendations": page_method,
 }
 PAGES[page]()
